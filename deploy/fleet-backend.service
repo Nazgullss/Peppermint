@@ -1,0 +1,68 @@
+# The backend: broker in, dashboards out. Installed to /etc/systemd/system/.
+#
+#   sudo systemctl enable --now fleet-backend
+
+[Unit]
+Description=Peppermint fleet backend (FastAPI, MQTT ingest, WebSocket hub)
+Documentation=https://github.com/Nazgullss/Peppermint
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+# Deliberately Wants= and not Requires=. The backend is built to survive the broker
+# going away -- ingest.run() backs off and reconnects, /healthz answers regardless, and
+# the last known fleet stays on the operator's screen. Requires= would tear the dashboard
+# down every time the broker restarted, which is the opposite of the intended behaviour.
+
+[Service]
+Type=exec
+User=fleet
+Group=fleet
+WorkingDirectory=/opt/fleet
+EnvironmentFile=/etc/fleet/fleet.env
+
+# --workers 1 is load-bearing, not a default left in place. The fleet state map is a
+# plain dict with exactly one owner, and the WebSocket hub broadcasts from that one
+# process. A second worker would serve half the dashboards from a state map that only
+# ever saw half the telemetry. Scaling past one process means sharding by robot_id or
+# moving state to a shared store -- see ARCHITECTURE.md.
+#
+# --no-access-log because the dashboard polls /api/stats about once a second per client;
+# logging that would bury the lines that actually matter.
+ExecStart=/opt/fleet/.venv/bin/uvicorn backend.main:app \
+    --host 0.0.0.0 \
+    --port 80 \
+    --workers 1 \
+    --no-access-log
+
+Restart=always
+RestartSec=2
+
+# Binding :80 as a non-root user. The alternative -- running as root, or a nftables
+# redirect from 80 to 8000 -- costs more than one capability does.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# The process writes nothing: trends are an in-memory ring buffer, the broker persists
+# nothing, and PYTHONDONTWRITEBYTECODE in fleet.env keeps Python from dropping
+# __pycache__ into the read-only tree.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# Every dashboard is a long-lived socket and the load test opens several at once.
+LimitNOFILE=65535
+
+# No MemoryMax on purpose. The load tests in FINDINGS.md are supposed to find where the
+# system bends; a cgroup ceiling would make the OOM killer the answer to every question
+# and the numbers would describe this file instead of the code.
+
+[Install]
+WantedBy=multi-user.target
