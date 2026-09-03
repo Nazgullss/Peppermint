@@ -1,0 +1,51 @@
+# The simulated fleet's publisher. Installed to /etc/systemd/system/.
+#
+#   sudo systemctl enable --now fleet-simulator
+#
+# Kept a separate unit from the backend on purpose: it stands in for hardware that is not
+# here, so it has to be restartable, stoppable and killable without touching the service
+# under test. Stopping this unit is how you demonstrate that robots going silent are
+# flagged stale rather than deleted.
+
+[Unit]
+Description=Peppermint fleet simulator (MQTT telemetry publisher)
+Documentation=https://github.com/Nazgullss/Peppermint
+After=network-online.target mosquitto.service
+Wants=network-online.target mosquitto.service
+
+[Service]
+Type=exec
+User=fleet
+Group=fleet
+WorkingDirectory=/opt/fleet
+EnvironmentFile=/etc/fleet/fleet.env
+
+ExecStart=/opt/fleet/.venv/bin/python -m simulator.main
+
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+LimitNOFILE=65535
+
+# The one real guard rail. apply_control() already clamps fleet_size to 20,000, but that
+# ceiling was chosen on a dev box with 16 GB. On a 1 GB t3.micro a fat-fingered
+# fleet_size should kill the simulator and let systemd restart it, not push the backend
+# and the broker into swap and take the demo down with it.
+MemoryMax=400M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
